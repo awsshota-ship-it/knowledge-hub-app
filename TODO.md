@@ -41,7 +41,7 @@
 ### Phase 1: APIサーバーのブラッシュアップ
 - [x] Azure OpenAI SDK への完全移植
 - [x] 知らないことは「知らない」と答えるガードレールの実装
-- [ ] `/delete` エンドポイントの実装（特定のメモをID指定で削除）
+- [-] `/delete` エンドポイントの実装（特定のメモをID指定で削除）←後で
 
 ### Phase 2: AWS Lambda デプロイ
 - [ ] `requirements.txt` の整備（`openai`, `fastapi`, `pinecone-client`, `mangum`）
