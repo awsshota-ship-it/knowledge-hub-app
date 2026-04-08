@@ -2,5 +2,5 @@ fastapi
 uvicorn
 mangum
 openai
-pinecone-client
+pinecone
 pydantic

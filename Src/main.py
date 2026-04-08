@@ -6,8 +6,16 @@ from pydantic import BaseModel
 from openai import AzureOpenAI
 from pinecone import Pinecone
 from mangum import Mangum
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 友達向けなので、一旦すべて許可
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 handler = Mangum(app)
 
 # 環境変数の読み込み
@@ -47,13 +55,19 @@ index = pc.Index(PINECONE_INDEX_NAME)
 # --- モデル定義 ---
 class SaveRequest(BaseModel):
     text: str
+    category: str = "未分類"  # "上半身", "下半身", "サプリ" など
     tags: List[str] = []
     user: str = "guest" # 誰が登録したか
 
 class QueryRequest(BaseModel):
     prompt: str
+    category_filter: Optional[str] = None # 特定カテゴリで絞りたい場合
     filter_tag: Optional[str] = None # 特定のタグで絞りたい場合
     filter_user: Optional[str] = None # 特定のユーザーで絞りたい場合
+
+class SummarizeCategoryRequest(BaseModel):
+    category: str
+    top_k: int = 10
 
 # --- エンドポイント ---
 @app.get("/")
@@ -73,11 +87,12 @@ def save_knowledge(req: SaveRequest):
         "values": vector, 
         "metadata": {
             "text": req.text,
+            "category": req.category,
             "tags": req.tags,
             "user": req.user
         }
     }])
-    return {"message": "Saved!", "id": doc_id, "tags": req.tags, "user": req.user}
+    return {"message": "Saved!", "id": doc_id, "category": req.category, "tags": req.tags, "user": req.user}
 
 @app.post("/ask")
 def ask_question(req: QueryRequest):
@@ -88,6 +103,8 @@ def ask_question(req: QueryRequest):
     # 2. フィルタの構築 (Pineconeのメタデータフィルタ)
     # 友達と共有する際、「筋トレ知識だけから探して」という指定が可能になる
     filter_condition = {}
+    if req.category_filter:
+        filter_condition["category"] = {"$eq": req.category_filter}
     if req.filter_tag:
         filter_condition["tags"] = {"$in": [req.filter_tag]}
     if req.filter_user:
@@ -130,4 +147,53 @@ def ask_question(req: QueryRequest):
     return {
         "answer": response.choices[0].message.content,
         "sources": [m['metadata']['text'] for m in search_results['matches']]
+    }
+
+@app.post("/clear")
+def clear_knowledge_base():
+    # Pinecone のデフォルト namespace のデータを全削除
+    index.delete(delete_all=True)
+    return {"message": "Knowledge base cleared successfully"}
+
+@app.post("/summarize-category")
+def summarize_category(req: SummarizeCategoryRequest):
+    # 1. カテゴリで絞って関連メモを取得
+    search_results = index.query(
+        vector=[0.0] * 1536,
+        top_k=req.top_k,
+        include_metadata=True,
+        filter={"category": {"$eq": req.category}}
+    )
+
+    matches = search_results.get("matches", [])
+    if not matches:
+        return {"category": req.category, "summary": "そのカテゴリのメモはまだありません。", "sources": []}
+
+    context_text = "\n".join([m["metadata"]["text"] for m in matches if m.get("metadata") and m["metadata"].get("text")])
+
+    summary_prompt = f"""
+    あなたはノート整理のアシスタントです。
+    以下のメモを、重複をまとめながら内容を整理して体系的なMarkdown形式のテキストを作成してください。
+    出力は日本語で、箇条書き中心にしてください。
+
+    【カテゴリ】
+    {req.category}
+
+    【メモ】
+    {context_text}
+    """
+
+    response = client.chat.completions.create(
+        model=CHAT_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": "あなたは整理整頓が得意な要約アシスタントです。"},
+            {"role": "user", "content": summary_prompt}
+        ]
+    )
+
+    return {
+        "category": req.category,
+        "summary": response.choices[0].message.content,
+        "source_count": len(matches),
+        "sources": [m["metadata"]["text"] for m in matches if m.get("metadata") and m["metadata"].get("text")]
     }
