@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+mangum
+openai
+pinecone
+pydantic
